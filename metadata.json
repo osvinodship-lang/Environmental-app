@@ -1,0 +1,6 @@
+{
+  "name": "EcoMap - Environmental Intelligence Platform",
+  "description": "Interactive environmental mapping app with live AQI monitoring, urban canopy tracking, renewable energy assets, eco hazards, and AI-powered regional environmental health analysis.",
+  "requestFramePermissions": ["geolocation"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
