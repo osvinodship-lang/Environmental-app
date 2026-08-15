@@ -1,9 +1,8 @@
-import React, { useState, useEffect } from 'react';
-import { APIProvider, Map, AdvancedMarker, InfoWindow, Pin, useAdvancedMarkerRef } from '@vis.gl/react-google-maps';
+import React, { useEffect, useRef } from 'react';
+import { APIProvider, Map, AdvancedMarker, InfoWindow, Pin } from '@vis.gl/react-google-maps';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
-import { EnvLocation, MapEngineMode, EnvCategory } from '../types';
-import { Wind, Trees, Zap, Trash2, AlertTriangle, MessageSquare, MapPin } from 'lucide-react';
+import { EnvLocation, MapEngineMode } from '../types';
 
 // Fix Leaflet default marker icons issue in React
 delete (L.Icon.Default.prototype as any)._getIconUrl;
@@ -36,8 +35,14 @@ export const MapContainer: React.FC<MapContainerProps> = ({
   hasGoogleMapsKey,
   googleApiKey,
 }) => {
-  const [leafletMap, setLeafletMap] = useState<L.Map | null>(null);
-  const [leafletMarkers, setLeafletMarkers] = useState<L.Marker[]>([]);
+  const leafletContainerRef = useRef<HTMLDivElement>(null);
+  const leafletMapRef = useRef<L.Map | null>(null);
+  const markersLayerRef = useRef<L.LayerGroup | null>(null);
+
+  const onMapClickRef = useRef(onMapClick);
+  onMapClickRef.current = onMapClick;
+  const onSelectLocationRef = useRef(onSelectLocation);
+  onSelectLocationRef.current = onSelectLocation;
 
   // Function to get color based on category/aqi
   const getCategoryColor = (loc: EnvLocation): string => {
@@ -54,62 +59,94 @@ export const MapContainer: React.FC<MapContainerProps> = ({
     }
   };
 
+  const isUsingGoogle = mapEngine === 'google' && hasGoogleMapsKey;
+
   // -------------------------------------------------------------
-  // LEAFLET ENGINE RENDERER
+  // LEAFLET MAP INITIALIZATION & CLEANUP
   // -------------------------------------------------------------
   useEffect(() => {
-    if (mapEngine !== 'leaflet') return;
+    if (isUsingGoogle) {
+      // Clean up leaflet map if switching to Google
+      if (leafletMapRef.current) {
+        leafletMapRef.current.remove();
+        leafletMapRef.current = null;
+        markersLayerRef.current = null;
+      }
+      return;
+    }
 
-    const container = document.getElementById('leaflet-map-container');
+    const container = leafletContainerRef.current;
     if (!container) return;
 
-    let mapInstance = leafletMap;
-
-    if (!mapInstance) {
-      mapInstance = L.map(container, {
-        center: [center.lat, center.lng],
-        zoom: zoom,
-        zoomControl: false,
-      });
-
-      // Add dark-themed CartoDB map tiles for modern anti-slop visual feel
-      L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
-        attribution: '&copy; OpenStreetMap contributors &copy; CARTO',
-        subdomains: 'abcd',
-        maxZoom: 19,
-      }).addTo(mapInstance);
-
-      L.control.zoom({ position: 'bottomright' }).addTo(mapInstance);
-
-      mapInstance.on('click', (e: L.LeafletMouseEvent) => {
-        onMapClick(e.latlng.lat, e.latlng.lng);
-      });
-
-      setLeafletMap(mapInstance);
-    } else {
-      mapInstance.setView([center.lat, center.lng], zoom);
+    // Destroy existing instance if container is already attached
+    if ((container as any)._leaflet_id && leafletMapRef.current) {
+      leafletMapRef.current.remove();
+      leafletMapRef.current = null;
+      markersLayerRef.current = null;
+    } else if ((container as any)._leaflet_id) {
+      (container as any)._leaflet_id = null;
     }
-  }, [mapEngine, center.lat, center.lng, zoom]);
 
-  // Update Leaflet Markers whenever locations change
+    const mapInstance = L.map(container, {
+      center: [center.lat, center.lng],
+      zoom: zoom,
+      zoomControl: false,
+    });
+
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
+      attribution: '&copy; OpenStreetMap contributors &copy; CARTO',
+      subdomains: 'abcd',
+      maxZoom: 19,
+    }).addTo(mapInstance);
+
+    L.control.zoom({ position: 'bottomright' }).addTo(mapInstance);
+
+    mapInstance.on('click', (e: L.LeafletMouseEvent) => {
+      onMapClickRef.current(e.latlng.lat, e.latlng.lng);
+    });
+
+    const markersGroup = L.layerGroup().addTo(mapInstance);
+    markersLayerRef.current = markersGroup;
+    leafletMapRef.current = mapInstance;
+
+    return () => {
+      if (leafletMapRef.current) {
+        leafletMapRef.current.remove();
+        leafletMapRef.current = null;
+        markersLayerRef.current = null;
+      }
+    };
+  }, [isUsingGoogle]);
+
+  // Update view when center / zoom change
   useEffect(() => {
-    if (mapEngine !== 'leaflet' || !leafletMap) return;
+    if (leafletMapRef.current) {
+      leafletMapRef.current.setView([center.lat, center.lng], zoom);
+    }
+  }, [center.lat, center.lng, zoom]);
 
-    // Clear existing markers
-    leafletMarkers.forEach(m => m.remove());
+  // Update Leaflet Markers whenever locations or selection change
+  useEffect(() => {
+    if (!leafletMapRef.current || !markersLayerRef.current) return;
 
-    const newMarkers: L.Marker[] = locations.map((loc) => {
+    markersLayerRef.current.clearLayers();
+
+    locations.forEach((loc) => {
       const color = getCategoryColor(loc);
+      const isSelected = selectedLocation?.id === loc.id;
+      const size = isSelected ? 34 : 28;
+      const anchor = size / 2;
+
       const customIcon = L.divIcon({
         className: 'custom-leaflet-marker',
         html: `
           <div style="
             background-color: ${color};
-            width: 28px;
-            height: 28px;
+            width: ${size}px;
+            height: ${size}px;
             border-radius: 50%;
-            border: 2px solid #0f172a;
-            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+            border: ${isSelected ? '3px solid #38bdf8' : '2px solid #0f172a'};
+            box-shadow: ${isSelected ? '0 0 16px rgba(56, 189, 248, 0.6)' : '0 4px 12px rgba(0,0,0,0.3)'};
             display: flex;
             align-items: center;
             justify-content: center;
@@ -122,27 +159,23 @@ export const MapContainer: React.FC<MapContainerProps> = ({
             ${loc.aqi ? loc.aqi.index : '•'}
           </div>
         `,
-        iconSize: [28, 28],
-        iconAnchor: [14, 14],
+        iconSize: [size, size],
+        iconAnchor: [anchor, anchor],
       });
 
-      const marker = L.marker([loc.lat, loc.lng], { icon: customIcon }).addTo(leafletMap);
-      
+      const marker = L.marker([loc.lat, loc.lng], { icon: customIcon });
       marker.on('click', () => {
-        onSelectLocation(loc);
+        onSelectLocationRef.current(loc);
       });
 
-      return marker;
+      markersLayerRef.current?.addLayer(marker);
     });
-
-    setLeafletMarkers(newMarkers);
-  }, [leafletMap, locations, mapEngine]);
-
+  }, [locations, selectedLocation]);
 
   // -------------------------------------------------------------
   // RENDER GOOGLE MAPS ENGINE OR LEAFLET ENGINE
   // -------------------------------------------------------------
-  if (mapEngine === 'google' && hasGoogleMapsKey) {
+  if (isUsingGoogle) {
     return (
       <div className="w-full h-full relative rounded-2xl overflow-hidden shadow-2xl border border-slate-800">
         <APIProvider apiKey={googleApiKey} version="weekly">
@@ -209,7 +242,7 @@ export const MapContainer: React.FC<MapContainerProps> = ({
   // Leaflet Map Container Engine (Zero key required fallback / direct mode)
   return (
     <div className="w-full h-full relative rounded-2xl overflow-hidden shadow-2xl border border-slate-800">
-      <div id="leaflet-map-container" className="w-full h-full z-10" />
+      <div ref={leafletContainerRef} className="w-full h-full z-10" />
     </div>
   );
 };
